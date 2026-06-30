@@ -43,6 +43,7 @@ from vllm.v1.engine import (
     ReconfigureDistributedRequest,
     ReconfigureRankType,
     UtilityOutput,
+    phantora_time,
 )
 from vllm.v1.engine.coordinator import DPCoordinator
 from vllm.v1.engine.core import EngineCore, EngineCoreProc
@@ -703,6 +704,10 @@ class MPClient(EngineCoreClient):
             return
         vllm_config = self.vllm_config
         response = msgspec.msgpack.decode(payload, type=EngineCoreReadyResponse)
+        # Phantora: align the frontend's virtual clock to EngineCore's post-model-load
+        # simulated time, so generate() timing starts from the same point and measures
+        # only the inference delta (not EngineCore's startup). No-op outside sim.
+        phantora_time.adopt(response.phantora_sim_time)
         vllm_config.model_config.max_model_len = min(
             vllm_config.model_config.max_model_len, response.max_model_len
         )
@@ -830,6 +835,10 @@ class SyncMPClient(MPClient):
     def _send_input(self, request_type: EngineCoreRequestType, request: Any):
         self.ensure_alive()
         self.free_pending_messages()
+        # Phantora: forward-stamp ADD requests with the frontend's simulated time so
+        # EngineCore adopts it (accounts for frontend work before the engine starts).
+        if request_type == EngineCoreRequestType.ADD:
+            request.phantora_sim_time = phantora_time.stamp()
         # (Identity, RequestType, SerializedRequest)
         msg = (self.core_engine, request_type.value, *self.encoder.encode(request))
 

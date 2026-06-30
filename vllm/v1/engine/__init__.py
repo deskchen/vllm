@@ -76,6 +76,9 @@ class EngineCoreReadyResponse:
     num_gpu_blocks: int
     dp_stats_address: str | None
     dtype: str | None = None
+    # Phantora: EngineCore's simulated time at startup (after model load), so the
+    # frontend can align its clock before timing generate(). 0.0 => not under sim.
+    phantora_sim_time: float = 0.0
 
 
 class EngineCoreRequest(
@@ -128,6 +131,11 @@ class EngineCoreRequest(
     # request_finished hook. Used to free P-side prefill blocks when a
     # KV-transfer request is rejected on the D node before engine admission.
     abort_immediately: bool = False
+
+    # Phantora: the frontend's simulated time when it sends this request, so
+    # EngineCore can adopt it (forward propagation) and account for frontend-side
+    # work (e.g. tokenization) that happened before the engine starts. 0.0 => unset.
+    phantora_sim_time: float = 0.0
 
     @property
     def params(self) -> SamplingParams | PoolingParams:
@@ -235,6 +243,11 @@ class EngineCoreOutputs(
     # In DP case, used to signal that a request was received for an
     # "old" wave, so the next wave needs to be started in other engines.
     start_wave: int | None = None
+
+    # Phantora cross-process simulated-time propagation: EngineCore stamps its
+    # virtual clock (get_time_double) here so the frontend can adopt it (max).
+    # 0.0 => unset / not running under Phantora. Appended last (array_like).
+    phantora_sim_time: float = 0.0
 
     def __post_init__(self):
         if self.timestamp == 0.0:

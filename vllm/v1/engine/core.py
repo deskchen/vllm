@@ -67,6 +67,7 @@ from vllm.v1.engine import (
     UtilityOutput,
     UtilityResult,
 )
+from vllm.v1.engine import phantora_time
 from vllm.v1.engine.tensor_ipc import TensorIpcReceiver
 from vllm.v1.engine.utils import (
     EngineHandshakeMetadata,
@@ -1443,6 +1444,9 @@ class EngineCoreProc(EngineCore):
                 num_gpu_blocks=self.vllm_config.cache_config.num_gpu_blocks or 0,
                 dp_stats_address=self.frontend_stats_publish_address,
                 dtype=str(self.vllm_config.model_config.dtype).removeprefix("torch."),
+                # Phantora: stamp EngineCore's post-model-load simulated time so the
+                # frontend aligns its clock here (before generate() is timed).
+                phantora_sim_time=phantora_time.stamp(),
             )
             ready_payload = msgspec.msgpack.encode(ready_response)
             for input_socket in input_sockets:
@@ -1474,6 +1478,11 @@ class EngineCoreProc(EngineCore):
                     request: Any
                     if request_type == EngineCoreRequestType.ADD:
                         req: EngineCoreRequest = add_request_decoder.decode(data_frames)
+                        # Phantora: adopt the frontend's simulated time (forward
+                        # propagation) while we still hold the EngineCoreRequest, before
+                        # it's converted to an internal Request. TIME_OFFSET is
+                        # process-global so adopting from this input thread is fine.
+                        phantora_time.adopt(req.phantora_sim_time)
                         try:
                             request = self.preprocess_add_request(req)
                         except Exception:
@@ -1535,6 +1544,9 @@ class EngineCoreProc(EngineCore):
                 assert not isinstance(output, bytes)
                 client_index, outputs = output
                 outputs.engine_index = engine_index
+                # Phantora: stamp EngineCore's simulated time so the frontend can
+                # adopt it (cross-process clock propagation). No-op outside sim.
+                outputs.phantora_sim_time = phantora_time.stamp()
 
                 if client_index == -1:
                     # Don't reuse buffer for coordinator message
