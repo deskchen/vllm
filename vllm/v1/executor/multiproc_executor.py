@@ -42,6 +42,7 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.envs import enable_envs_cache
 from vllm.logger import init_logger
+from vllm.v1.engine import phantora_time
 from vllm.platforms import current_platform
 from vllm.tracing import instrument, maybe_init_worker_tracer
 from vllm.utils import numa_utils
@@ -383,9 +384,12 @@ class MultiprocExecutor(Executor):
                     None if deadline is None else (deadline - time.monotonic())
                 )
                 try:
-                    status, result = mq.dequeue(timeout=dequeue_timeout)
+                    status, result, sim_time = mq.dequeue(timeout=dequeue_timeout)
                 except TimeoutError as e:
                     raise TimeoutError(f"RPC call to {method} timed out.") from e
+                # Advance this (coordinator) process's virtual clock to the worker
+                # that executed the RPC, so simulated time crosses the TP boundary.
+                phantora_time.adopt(sim_time)
                 if status != WorkerProc.ResponseStatus.SUCCESS:
                     raise RuntimeError(
                         f"Worker failed with error '{result}', please check the"
@@ -910,6 +914,9 @@ class WorkerProc:
             result = (WorkerProc.ResponseStatus.FAILURE, str(output))
         else:
             result = (WorkerProc.ResponseStatus.SUCCESS, output)
+        # Carry this worker's simulated time so the caller advances its own clock
+        # to the worker that ran the model (Phantora; 0.0 / no-op otherwise).
+        result = (*result, phantora_time.stamp())
         if (response_mq := self.worker_response_mq) is not None:
             response_mq.enqueue(result)
 
