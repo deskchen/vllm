@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import ctypes
+import os
 from contextlib import contextmanager
 from typing import cast
 
@@ -26,6 +28,26 @@ except Exception:
     custom_ar = False
 
 logger = init_logger(__name__)
+
+
+def _phantora_report_peer_all_reduce():
+    """The simulator's flow-report entry, or None outside the simulator."""
+    if os.environ.get("PHANTORA_SOCKET_PREFIX") is None:
+        return None
+    report = ctypes.CDLL("libcuda.so.1").phantora_report_peer_all_reduce
+    report.argtypes = [
+        ctypes.c_uint64,
+        ctypes.c_size_t,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_size_t,
+        ctypes.c_size_t,
+    ]
+    report.restype = None
+    return report
+
+
+_phantora_report = _phantora_report_peer_all_reduce()
 
 
 def _can_p2p(rank: int, world_size: int) -> bool:
@@ -255,6 +277,8 @@ class CustomAllreduce:
         """
         if out is None:
             out = torch.empty_like(inp)
+        if _phantora_report is not None:
+            self._report_flows(out)
         if registered:
             ops.all_reduce(self._ptr, inp, out, 0, 0)
         else:
@@ -262,6 +286,37 @@ class CustomAllreduce:
                 self._ptr, inp, out, self.buffer_ptrs[self.rank], self.max_size
             )
         return out
+
+    def _kernel_stages(self, nbytes: int) -> int:
+        """Stages of the kernel csrc/custom_all_reduce.cuh launches for
+        `nbytes` of input: 1 (each rank reads every peer's input) or 2
+        (reduce-scatter, then all-gather)."""
+        algo = os.environ.get("VLLM_CUSTOM_ALLREDUCE_ALGO")
+        if algo in ("1stage", "oneshot"):
+            return 1
+        if algo in ("2stage", "twoshot"):
+            return 2
+        if self.world_size == 2:
+            return 1
+        small = (self.world_size <= 4 and nbytes < 512 * 1024) or (
+            self.world_size <= 8 and nbytes < 256 * 1024
+        )
+        return 1 if small else 2
+
+    def _report_flows(self, out: torch.Tensor) -> None:
+        """Phantora: tell the simulator the traffic of the kernel about to run.
+        The kernel reads the peers' IPC buffers, which the simulator prices as
+        flows; nothing here changes how the all-reduce is done."""
+        nbytes = out.numel() * out.element_size()
+        ptrs = (ctypes.c_size_t * len(self.meta_ptrs))(*self.meta_ptrs)
+        _phantora_report(
+            out.data_ptr(),
+            nbytes,
+            self._kernel_stages(nbytes),
+            ptrs,
+            len(self.meta_ptrs),
+            self.rank,
+        )
 
     def custom_all_reduce(self, input: torch.Tensor) -> torch.Tensor | None:
         """The main allreduce API that provides support for cuda graph."""
