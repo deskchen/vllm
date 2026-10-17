@@ -69,6 +69,11 @@ class EngineCoreRequest(
 
     trace_headers: Optional[Mapping[str, str]] = None
 
+    # Phantora: the frontend's simulated time when it sends this request, so
+    # EngineCore can adopt it (forward propagation) and account for frontend-side
+    # work (e.g. tokenization) that happened before the engine starts. 0.0 => unset.
+    phantora_sim_time: float = 0.0
+
 
 class EngineCoreEventType(enum.IntEnum):
     """The type of engine core request event."""
@@ -167,6 +172,11 @@ class EngineCoreOutputs(
     # In DP case, used to signal that a request was received for an
     # "old" wave, so the next wave needs to be started in other engines.
     start_wave: Optional[int] = None
+
+    # Phantora cross-process simulated-time propagation: EngineCore stamps its
+    # virtual clock (get_time_double) here so the frontend can adopt it (max).
+    # 0.0 => unset / not running under Phantora. Appended last (array_like).
+    phantora_sim_time: float = 0.0
 
     def __post_init__(self):
         if self.timestamp == 0.0:

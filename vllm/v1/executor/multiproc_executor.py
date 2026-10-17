@@ -31,6 +31,7 @@ from vllm.distributed.parallel_state import (get_dp_group, get_ep_group,
 from vllm.executor.multiproc_worker_utils import (
     set_multiprocessing_worker_envs)
 from vllm.logger import init_logger
+from vllm.v1.engine import phantora_time
 from vllm.utils import (decorate_logs, get_distributed_init_method,
                         get_loopback_ip, get_mp_context, get_open_port,
                         set_process_title)
@@ -236,8 +237,11 @@ class MultiprocExecutor(Executor):
             def get_response(w: WorkerProcHandle,
                              dequeue_timeout: Optional[float] = None,
                              cancel_event: Optional[threading.Event] = None):
-                status, result = w.worker_response_mq.dequeue(
+                status, result, sim_time = w.worker_response_mq.dequeue(
                     timeout=dequeue_timeout, cancel=cancel_event)
+                # Advance this (coordinator) process's virtual clock to the worker
+                # that executed the RPC, so simulated time crosses the TP boundary.
+                phantora_time.adopt(sim_time)
 
                 if status != WorkerProc.ResponseStatus.SUCCESS:
                     raise RuntimeError(
@@ -618,6 +622,9 @@ class WorkerProc:
             result = (WorkerProc.ResponseStatus.FAILURE, str(output))
         else:
             result = (WorkerProc.ResponseStatus.SUCCESS, output)
+        # Carry this worker's simulated time so the caller advances its own clock
+        # to the worker that ran the model (Phantora; 0.0 / no-op otherwise).
+        result = (*result, phantora_time.stamp())
         self.worker_response_mq.enqueue(result)
 
     def handle_output(self, output: Any):

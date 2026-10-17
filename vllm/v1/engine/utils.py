@@ -20,6 +20,7 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.ray.ray_env import get_env_vars_to_copy
 from vllm.utils import get_mp_context, get_open_zmq_ipc_path, zmq_socket_ctx
+from vllm.v1.engine import phantora_time
 from vllm.v1.engine.coordinator import DPCoordinator
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.utils import get_engine_client_zmq_addr, shutdown
@@ -837,6 +838,10 @@ def wait_for_engine_startup(
             num_gpu_blocks = cache_config.num_gpu_blocks or 0
             num_gpu_blocks += msg["num_gpu_blocks"]
             cache_config.num_gpu_blocks = num_gpu_blocks
+            # Phantora: align the frontend's virtual clock to EngineCore's
+            # post-model-load simulated time, so generate() timing starts from
+            # the same point. No-op outside sim.
+            phantora_time.adopt(msg.get("phantora_sim_time", 0.0))
 
             # In external DP LB mode, the coordinator address that the
             # front-end procs connect to is obtained from rank 0 via

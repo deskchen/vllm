@@ -36,6 +36,7 @@ from vllm.v1.core.kv_cache_utils import (BlockHash, get_kv_cache_config,
 from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler as V1Scheduler
+from vllm.v1.engine import phantora_time
 from vllm.v1.engine import (EngineCoreOutputs, EngineCoreRequest,
                             EngineCoreRequestType,
                             ReconfigureDistributedRequest, ReconfigureRankType,
@@ -632,6 +633,9 @@ class EngineCoreProc(EngineCore):
                     "headless": headless,
                     "num_gpu_blocks": num_gpu_blocks,
                     "dp_stats_address": dp_stats_address,
+                    # Phantora: stamp EngineCore's post-model-load simulated time so the
+                    # frontend aligns its clock here (before generate() is timed).
+                    "phantora_sim_time": phantora_time.stamp(),
                 }))
 
     @staticmethod
@@ -882,6 +886,10 @@ class EngineCoreProc(EngineCore):
                     # Deserialize the request data.
                     if request_type == EngineCoreRequestType.ADD:
                         request = add_request_decoder.decode(data_frames)
+                        # Phantora: adopt the frontend's simulated time (forward
+                        # propagation). TIME_OFFSET is process-global so adopting
+                        # from this input thread is fine.
+                        phantora_time.adopt(request.phantora_sim_time)
                         request = self.preprocess_add_request(request)
                     else:
                         request = generic_decoder.decode(data_frames)
@@ -926,6 +934,9 @@ class EngineCoreProc(EngineCore):
                 assert not isinstance(output, bytes)
                 client_index, outputs = output
                 outputs.engine_index = engine_index
+                # Phantora: stamp EngineCore's simulated time so the frontend can
+                # adopt it (cross-process clock propagation). No-op outside sim.
+                outputs.phantora_sim_time = phantora_time.stamp()
 
                 if client_index == -1:
                     # Don't reuse buffer for coordinator message

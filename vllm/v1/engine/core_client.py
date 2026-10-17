@@ -29,6 +29,7 @@ from vllm.v1.engine import (EngineCoreOutputs, EngineCoreRequest,
                             EngineCoreRequestType,
                             ReconfigureDistributedRequest, ReconfigureRankType,
                             UtilityOutput)
+from vllm.v1.engine import phantora_time
 from vllm.v1.engine.coordinator import DPCoordinator
 from vllm.v1.engine.core import EngineCore, EngineCoreProc
 from vllm.v1.engine.exceptions import EngineDeadError
@@ -675,6 +676,10 @@ class SyncMPClient(MPClient):
     def _send_input(self, request_type: EngineCoreRequestType, request: Any):
         self.ensure_alive()
         self.free_pending_messages()
+        # Phantora: forward-stamp ADD requests with the frontend's simulated time so
+        # EngineCore adopts it (accounts for frontend work before the engine starts).
+        if request_type == EngineCoreRequestType.ADD:
+            request.phantora_sim_time = phantora_time.stamp()
         # (Identity, RequestType, SerializedRequest)
         msg = (self.core_engine, request_type.value,
                *self.encoder.encode(request))

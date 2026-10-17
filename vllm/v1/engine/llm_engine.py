@@ -24,6 +24,7 @@ from vllm.transformers_utils.tokenizer_group import (
     TokenizerGroup, init_tokenizer_from_configs)
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Device
+from vllm.v1.engine import phantora_time
 from vllm.v1.engine.core_client import EngineCoreClient
 from vllm.v1.engine.output_processor import OutputProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
@@ -246,6 +247,11 @@ class LLMEngine:
 
         # 1) Get EngineCoreOutput from the EngineCore.
         outputs = self.engine_core.get_output()
+
+        # Phantora: adopt EngineCore's simulated time (forward-only max), so the
+        # frontend's virtual clock tracks the engine's inference progress instead
+        # of its own real-time wait. No-op outside the simulator.
+        phantora_time.adopt(outputs.phantora_sim_time)
 
         # 2) Process EngineCoreOutputs.
         iteration_stats = IterationStats() if self.log_stats else None
